@@ -1,0 +1,15 @@
+# Python
+venv/
+.env
+__pycache__/
+*.sqlite
+
+# Astro / Node
+node_modules/
+.astro/
+
+# GNS3
+*.gns3project
+*.vmdk
+*.qcow2
+project-files/
