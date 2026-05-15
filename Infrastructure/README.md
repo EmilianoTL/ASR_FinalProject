@@ -12,7 +12,7 @@ Este proyecto documenta una infraestructura de red diseñada en GNS3 para labora
 ## ⚙️ Configuraciones Detalladas por Router
 
 Todos los routers operan bajo la versión **12.4 de IOS** y comparten una base de servicios comunes para administración:
-* **Seguridad y Acceso:** Usuario `admin` con privilegio 15, dominio `redes.local` y SSHv2 habilitado con tiempo de espera de 30s.
+* **Seguridad y Acceso:** Usuario `admin` con privilegio 15, dominio `redes.local`, SSHv2 habilitado con tiempo de espera de 30s y contraseña `admin` .
 * **Líneas VTY:** Configuración de `login local` y `transport input ssh` para gestión remota.
 
 ### 1. Edge Router
