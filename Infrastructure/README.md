@@ -72,6 +72,29 @@ Utiliza una configuración de red persistente para separar la gestión de la con
 
 ---
 
+## 🌐 Implementación de SNMP en la Topología
+
+Para permitir el monitoreo dinámico y la telemetría, todos los routers Cisco 7200 han sido configurados con **SNMP v2c**. Esta implementación permite al sistema SME obtener métricas de tráfico y reaccionar a cambios de estado en tiempo real.
+
+### 📋 Detalles de Configuración en Routers
+Se aplicó la siguiente configuración base en cada nodo de la red:
+
+1. **Gestión de Acceso**: Se habilitó una comunidad de Lectura/Escritura (RW) para permitir la exploración completa de las MIBs.
+2. **Sistema de Alertas (Traps)**: Se configuraron los routers para que informen proactivamente al SME sobre cambios en las interfaces físicas.
+3. **Destino de Notificaciones**: Se apuntó explícitamente a la dirección IP del servidor SME en el puerto UDP 162.
+
+**Comandos aplicados:**
+```bash
+conf t
+ snmp-server community asr_proyecto RW
+ snmp-server enable traps snmp linkup linkdown
+ snmp-server host 192.168.0.10 version 2c asr_proyecto
+ exit
+wr
+```
+
+---
+
 ## 🧪 Pruebas de Verificación
 1.  **Conectividad OSPF:** `show ip ospf neighbor` en cualquier router debe mostrar sus vecinos en estado `FULL`.
 2.  **Alcance SME:** Desde la SME, realizar `ping` a las loopbacks de administración (ej. `192.168.100.1`).

@@ -87,6 +87,15 @@ DB_NAME=red_asr.db
 # Credenciales de Red (Routers)
 ROUTER_USER=admin
 ROUTER_PASS=admin
+
+# --- Configuración SNMP ---
+SNMP_COMMUNITY=asr_proyecto    # Comunidad definida en los routers
+SNMP_PORT_POLLING=161          # Puerto para consultas de octetos (Polling)
+SNMP_PORT_TRAPS=162            # Puerto para recepción de alertas (Traps)
+
+# --- Configuración del SME ---
+SME_IP=192.168.0.10            # IP del contenedor (necesaria para recibir Traps)
+POLLING_INTERVAL=10            # Frecuencia de muestreo en segundos
 ```
 
 ---
