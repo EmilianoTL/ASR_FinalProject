@@ -1,0 +1,39 @@
+# =========================
+# Entornos Virtuales
+# (¡CRÍTICO! Nunca subir esto, cada quien lo instala en su máquina)
+# =========================
+venv/
+env/
+
+# =========================
+# Archivos de caché de Python
+# (Archivos compilados que Python genera automáticamente)
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# Bases de Datos Locales
+# (Evita que sobrescribas la base de datos de producción con tus pruebas locales)
+# =========================
+*.db
+*.sqlite3
+
+# =========================
+# Secretos y Variables de Entorno
+# (Para cuando configures contraseñas reales que no quieres en GitHub)
+# =========================
+.env
+.env.local
+secret.py
+
+# =========================
+# Configuraciones de tu Editor (VS Code)
+# =========================
+.vscode/
+
+# =========================
+# Logs del sistema
+# =========================
+*.log
