@@ -1,92 +1,81 @@
 import os
+import asyncio
 from pysnmp.hlapi.v3arch.asyncio import *
 from database.models import db, MetricaOctetos
 
-# Cargar variables de entorno
 COMUNIDAD = os.getenv('SNMP_COMMUNITY', 'asr_proyecto')
 PUERTO_SNMP = int(os.getenv('SNMP_PORT_POLLING', 161))
+
 def estandarizar_nombre_interfaz(interfaz_api):
-    """
-    El PDF requiere que la API reciba formatos como 'f1_0' o 'fastethernet1_0'.
-    Esta función lo traduce al formato que suele devolver Cisco en ifDescr ('fastethernet1/0').
-    """
     nombre = interfaz_api.lower().replace("_", "/")
-    
-    # Si empieza con 'f' pero no es 'fastethernet', lo expandimos
     if nombre.startswith("f") and not nombre.startswith("fastethernet"):
         nombre = nombre.replace("f", "fastethernet", 1)
-        
     return nombre
 
-def obtener_indice_dinamico(ip_admin, interfaz_api):
-    """
-    Hace un SNMP WALK sobre ifDescr (1.3.6.1.2.1.2.2.1.2) para encontrar 
-    dinámicamente el ifIndex de la interfaz solicitada.
-    """
+async def obtener_indice_dinamico(ip_admin, interfaz_api):
     nombre_buscado = estandarizar_nombre_interfaz(interfaz_api)
     oid_ifdescr = '1.3.6.1.2.1.2.2.1.2'
     
-    # nextCmd es la función de PySNMP 7.x para hacer un SNMP WALK
-    iterator = next_cmd(
-        SnmpEngine(),
-        CommunityData(COMUNIDAD, mpModel=1), # v2c
-        UdpTransportTarget((ip_admin, PUERTO_SNMP), timeout=2, retries=1),
+    # 1. Creación asíncrona del transporte UDP (PySNMP v7.1)
+    transport = await UdpTransportTarget.create((ip_admin, PUERTO_SNMP))
+    engine = SnmpEngine()
+    
+    # 2. Uso de next_cmd en lugar de nextCmd
+    async for errorIndication, errorStatus, errorIndex, varBinds in next_cmd(
+        engine,
+        CommunityData(COMUNIDAD, mpModel=1),
+        transport,
         ContextData(),
         ObjectType(ObjectIdentity(oid_ifdescr)),
-        lexicographicMode=False # Solo caminar dentro de ifDescr
-    )
-
-    for errorIndication, errorStatus, errorIndex, varBinds in iterator:
+        lexicographicMode=False
+    ):
         if errorIndication or errorStatus:
-            print(f"Error SNMP WALK: {errorIndication or errorStatus}")
             return None
             
         for varBind in varBinds:
-            oid_completo = varBind[0]
-            nombre_interfaz_router = varBind[1].prettyPrint().lower()
-            
-            # Si encontramos "fastethernet1/0" en el resultado del router
-            if nombre_buscado in nombre_interfaz_router:
-                # El OID se ve así: 1.3.6.1.2.1.2.2.1.2.2
-                # El índice es el último número del OID
-                indice = int(oid_completo[-1])
-                return indice
+            oid_completo = str(varBind[0])
+            nombre_interfaz = str(varBind[1]).lower()
+            if nombre_buscado in nombre_interfaz:
+                # Retorna el ifIndex encontrado (ej. el '2' de '...2.2.1.2.2')
+                return int(oid_completo.split('.')[-1])
                 
-    return None # No se encontró la interfaz
+    return None
+
+async def consultar_octetos_async(ip_admin, interfaz_api):
+    indice = await obtener_indice_dinamico(ip_admin, interfaz_api)
+    if not indice:
+        return None, f"La interfaz {interfaz_api} no existe en el router."
+
+    oid_octetos = f'1.3.6.1.2.1.2.2.1.10.{indice}'
+    
+    # 1. Creación asíncrona del transporte UDP
+    transport = await UdpTransportTarget.create((ip_admin, PUERTO_SNMP))
+    engine = SnmpEngine()
+
+    # 2. Uso de get_cmd en lugar de getCmd
+    errorIndication, errorStatus, errorIndex, varBinds = await get_cmd(
+        engine,
+        CommunityData(COMUNIDAD, mpModel=1),
+        transport,
+        ContextData(),
+        ObjectType(ObjectIdentity(oid_octetos))
+    )
+
+    if errorIndication or errorStatus:
+        return None, f"Fallo SNMP: {errorIndication or errorStatus}"
+
+    return int(varBinds[0][1]), indice
 
 def recolectar_octetos(hostname, ip_admin, interfaz_api):
     """
-    Busca dinámicamente el índice de la interfaz, obtiene los octetos de entrada
-    y guarda el registro en la base de datos (SQLAlchemy 3.x).
+    Envoltorio síncrono para Flask y SQLAlchemy.
     """
-    # 1. Búsqueda dinámica (¡Ya no está hardcodeado!)
-    indice = obtener_indice_dinamico(ip_admin, interfaz_api)
-    
-    if not indice:
-        return {"error": True, "mensaje": f"La interfaz {interfaz_api} no existe en el router."}
-
-    # 2. OID de ifInOctets armado dinámicamente
-    oid_octetos = f'1.3.6.1.2.1.2.2.1.10.{indice}'
-
     try:
-        # 3. Petición GET con PySNMP 7.x
-        iterator = get_cmd(
-            SnmpEngine(),
-            CommunityData(COMUNIDAD, mpModel=1),
-            UdpTransportTarget((ip_admin, PUERTO_SNMP), timeout=2, retries=1),
-            ContextData(),
-            ObjectType(ObjectIdentity(oid_octetos))
-        )
+        octetos, indice_o_error = asyncio.run(consultar_octetos_async(ip_admin, interfaz_api))
+        
+        if octetos is None:
+            return {"error": True, "mensaje": indice_o_error}
 
-        errorIndication, errorStatus, errorIndex, varBinds = next(iterator)
-
-        if errorIndication or errorStatus:
-            return {"error": True, "mensaje": "Fallo al consultar octetos."}
-
-        # Extraer el valor
-        octetos = int(varBinds[0][1])
-
-        # 4. Guardar en SQLite usando SQLAlchemy 3.x
         nueva_metrica = MetricaOctetos(
             router_hostname=hostname,
             interfaz_api=interfaz_api,
@@ -101,30 +90,25 @@ def recolectar_octetos(hostname, ip_admin, interfaz_api):
             "datos": {
                 "router": hostname,
                 "interfaz": interfaz_api,
-                "ifIndex_encontrado": indice,
+                "ifIndex_encontrado": indice_o_error,
                 "octetos_entrada": octetos
             }
         }
-
     except Exception as e:
         return {"error": True, "mensaje": f"Error del sistema: {str(e)}"}
-    
 
+# --- BLOQUE DE PRUEBA LOCAL ---
 if __name__ == '__main__':
-    from database.models import app # Necesitamos el contexto de Flask para la BD
+    from database.models import app
     
-    # Datos de prueba (Ajusta la IP al router Edge o R1 de tu GNS3)
     ROUTER_PRUEBA = "Edge"
-    IP_PRUEBA = "192.168.100.1"  # IP administrativa del router en tu topología
-    INTERFAZ_PRUEBA = "f1_0"     # Interfaz que sabemos que existe
+    IP_PRUEBA = "192.168.100.1" 
+    INTERFAZ_PRUEBA = "f1_0"     
     
-    print(f"Iniciando prueba SNMP hacia {ROUTER_PRUEBA} ({IP_PRUEBA})...")
+    print(f"Iniciando prueba (PySNMP v7 asyncio) hacia {ROUTER_PRUEBA} ({IP_PRUEBA})...")
     
-    with app.app_context(): # Simulamos que estamos dentro de la API
-        # Creamos las tablas de prueba si no existen
+    with app.app_context():
         db.create_all() 
-        
-        # Ejecutamos tu función
         resultado = recolectar_octetos(ROUTER_PRUEBA, IP_PRUEBA, INTERFAZ_PRUEBA)
-        print("\nResultado de la prueba:")
+        print("\nResultado:")
         print(resultado)
