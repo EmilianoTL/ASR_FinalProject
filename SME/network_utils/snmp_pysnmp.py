@@ -11,9 +11,6 @@ from pysnmp.entity.rfc3413 import ntfrcv  # API estándar de entidad según ntfr
 from pysnmp.carrier.asyncio.dgram import udp  # Transporte nativo de asyncio (base.py)
 from pysnmp.entity import config  # API oficial de configuración de entidad
 
-# Variables Globales de Control de Infraestructura
-_HILO_LISTENER_TRAPS = None
-_LOCK_LISTENER = threading.Lock()  # Previene condiciones de carrera en hilos
 
 COMUNIDAD = os.getenv('SNMP_COMMUNITY', 'asr_proyecto')
 PUERTO_SNMP = int(os.getenv('SNMP_PORT_POLLING', 161))
@@ -112,10 +109,17 @@ def recolectar_octetos(hostname, ip_admin, interfaz_api):
     except Exception as e:
         return {"error": True, "mensaje": f"Error del sistema: {str(e)}"}
 
+# ==============================================================================
+# --- RECEPTOR DE TRAPS SNMP CORE (ASYNCIO NATIVO v7.1 VERIFICADO) ---
+# ==============================================================================
+
+_HILO_LISTENER_TRAPS = None
+_LOCK_LISTENER = threading.Lock()
+
 def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextName, varBinds, cbCtx):
     """
-    Callback de diagnóstico de alta visibilidad.
-    Inserta prints globales para rastrear el origen exacto del paquete de GNS3.
+    Callback nativo de 6 argumentos de la entidad de bajo nivel (ntfrcv.py).
+    Se ejecuta de forma imperativa en cuanto el socket detecta tráfico UDP 162.
     """
     from database.models import db, EventoTrap, Router
     
@@ -130,6 +134,7 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
     interfaz_afectada = "Desconocida"
     ip_origen = "Desconocida"
 
+    # 1. Extraer la IP de origen del paquete de red
     try:
         transport_info = snmpEngine.transportDispatcher.getTransportInfo(stateReference)
         if transport_info:
@@ -137,7 +142,7 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
     except Exception:
         pass
 
-    # Analizar el contenido crudo enviado por el IOS
+    # 2. Analizar las variables vinculadas (varBinds)
     for name, val in varBinds:
         val_str = str(val)
         if val_str == OID_LINK_DOWN:
@@ -147,31 +152,29 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
         elif OID_IF_DESCR in str(name) or "ifDescr" in str(name):
             interfaz_afectada = val_str.lower()
 
-    # Normalización del formato de interfaz de Cisco (FastEthernet1/0 -> f1_0)
     if "fastethernet" in interfaz_afectada:
         interfaz_afectada = interfaz_afectada.replace("fastethernet", "f", 1).replace("/", "_")
 
-    print(f"\n📨 [PAQUETE TRAP ENTRANTE] -> IP Origen: {ip_origen} | Interfaz OID: {interfaz_afectada} | Tipo: {tipo_evento}")
+    # ¡PRINT DE CONTROL ABSOLUTO DE ENTRADA DE RED!
+    print(f"\n🔥 [ALERTA DE RED DETECTADA] -> IP: {ip_origen} | Interfaz: {interfaz_afectada} | Evento: {tipo_evento}")
 
     with app_context:
-        # MAPEO INTELIGENTE: Si viene de la IP de backbone 10.0.0.17 o de la admin 192.168.100.1, sabemos que es Edge
+        # Mapeo de seguridad para tu topología GNS3 (IP backbone y de gestión)
         if ip_origen in ["10.0.0.17", "192.168.100.1"]:
             hostname = "Edge"
         else:
             router = Router.query.filter_by(ip_admin=ip_origen).first()
-            hostname = router.hostname if router else f"Desconocido_{ip_origen}"
+            hostname = router.hostname if router else f"Dispositivo_{ip_origen}"
         
         identificador_unico = f"{hostname}_{interfaz_afectada}_traps"
-        print(f"🔍 [EVALUANDO FILTRO] -> Buscando llave en memoria: '{identificador_unico}'")
+        print(f"   🔍 [Filtro de Ruta] Validando clave en memoria Flask: '{identificador_unico}'")
 
-        # === BYPASS TEMPORAL DE DIAGNÓSTICO ===
-        # Si la llave no está activa en el POST, de todos modos imprimimos la advertencia en consola
-        # pero forzamos el guardado para verificar que la base de datos responde.
+        # Verificar si la interfaz se activó por POST
         if not app_obj.hilos_snmp_activos.get(identificador_unico, False):
-            print(f"   ⚠️ [FILTRO HTTP] La interfaz '{identificador_unico}' no ha recibido un POST de activación, pero se guardará por diagnóstico.")
+            print(f"   ⚠️ [FILTRO IGNORED] La interfaz '{identificador_unico}' no está activa por HTTP POST, se descarta el guardado.")
             return
 
-        # Guardar el registro en SQLite
+        # Guardar en Base de Datos SQLite
         try:
             nuevo_evento = EventoTrap(
                 router_hostname=hostname,
@@ -180,79 +183,90 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
             )
             db.session.add(nuevo_evento)
             db.session.commit()
-            print(f"   ✅ [ÉXITO TOTAL] Guardado en BD -> Router: {hostname} | Interfaz: {interfaz_afectada} | Evento: {tipo_evento}")
+            print(f"   💾 [BD GUARDADO] Registro insertado exitosamente para {hostname}.")
         except Exception as e:
             db.session.rollback()
-            print(f"   ❌ [ERROR SQL] No se pudo escribir en la base de datos: {e}")
+            print(f"   ❌ [BD ERROR] Error al escribir evento en SQLite: {e}")
 
-def ejecutar_servidor_traps_sincrono(app_context):
+
+async def corutina_servidor_traps(app_context):
     """
-    Levanta un socket UDP e implementa de forma matemática runDispatcher() y jobStarted(1).
-    Alineado con dispatch.py:58-61 y base.py:90-99.
+    Corutina asíncrona pura utilizando las clases de la entidad base de PySNMP v7.1.
+    Abre el socket UDP y registra de forma transparente la escucha en el bucle de asyncio.
     """
+    # IMPORTS CRÍTICOS REVISADOS Y CORREGIDOS PARA V7.1 DE BAJO NIVEL
+    from pysnmp.entity.engine import SnmpEngine  # <-- Motor base correcto de la entidad
+    from pysnmp.entity.rfc3413 import ntfrcv   # Enfoque asíncrono nativo de Lextudio
+    from pysnmp.carrier.asyncio.dgram import udp  # Capa de transporte asíncrona oficial
+    from pysnmp.entity import config  # Módulo de configuración para añadir transporte
+    
     puerto_traps = int(os.getenv('SNMP_PORT_TRAPS', 162))
-    ip_escucha = "0.0.0.0" 
+    ip_escucha = "0.0.0.0"
 
-    # 1. Registro del transporte usando udp.DOMAIN (v7.1 estricto)
-    # SOLUCIÓN COMPLEMENTARIA: Le asignamos un event loop propio a este hilo 
-    # para que los componentes internos de asyncio de PySNMP v7 no se rompan
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
+    # Inicializamos el motor core de la entidad
     snmp_engine = SnmpEngine()
 
-    # Tu corrección exacta para el enlace del socket
     try:
+        # Acoplamos el socket UDP no bloqueante al despachador de asyncio
         config.addTransport(
             snmp_engine,
-            udp.domainName,  # <--- Tu corrección exitosa
+            udp.domainName,
             udp.UdpTransport().openServerMode((ip_escucha, puerto_traps))
         )
     except Exception as e:
-        print(f"❌ [FALLO PUERTO 162] Error crítico de enlace de socket. ¿Es root? Detalle: {e}")
+        print(f"❌ [FALLO PUERTO 162] Error al abrir el Socket UDP: {e}")
         return
 
-    # Registrar el NotificationReceiver
+    # Registramos el receptor acoplándolo de forma atómica al motor base
     ntfrcv.NotificationReceiver(
-        snmp_engine, 
-        procesar_trap_entrante, 
+        snmp_engine,
+        procesar_trap_entrante,
         cbCtx=app_context
     )
 
-    # Forzar persistencia del bucle de red
+    # Marcamos un trabajo activo continuo para evitar que el despachador se cierre solo
     snmp_engine.transportDispatcher.jobStarted(1)
+    print(f"📡 [SERVIDOR UDP TRAPS ONLINE] Escuchando activamente en el puerto {puerto_traps} de GNS3...")
 
-    print(f"📡 [SERVIDOR UDP TRAPS ONLINE] Escuchando perpetuamente en el puerto {puerto_traps}...")
-
-    # Inicializar el loop de sockets de PySNMP
+    # Dejamos que el bucle de asyncio del hilo maneje la cola de sockets de forma nativa e infinita
     try:
-        snmp_engine.transportDispatcher.runDispatcher()
-    except Exception as e:
-        print(f"⚠️ [SERVIDOR TRAPS] Interrupción en el bucle de despacho de red: {e}")
+        while True:
+            await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        print("🛑 [SERVIDOR TRAPS] Corutina de escucha cancelada de forma segura.")
     finally:
-        try:
-            snmp_engine.transportDispatcher.jobFinished(1)
-            snmp_engine.transportDispatcher.closeDispatcher()
-        except Exception:
-            pass
-        loop.close()  # Cerramos el loop local del hilo al finalizar
-        print("🛑 [SERVIDOR TRAPS OFFLINE] Socket UDP 162 liberado del sistema.")
+        snmp_engine.transportDispatcher.jobFinished(1)
+        snmp_engine.transportDispatcher.closeDispatcher()
+        print("🛑 [SERVIDOR TRAPS OFFLINE] Socket UDP 162 liberado.")
+
+
+def lanzar_bucle_asincrono_dedicado(app_context):
+    """
+    Inicializa un bucle de eventos asíncronos limpio y exclusivo para este hilo.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(corutina_servidor_traps(app_context))
+    except Exception as e:
+        print(f"❌ [HILO TRAPS] Error en el bucle asíncronio del hilo: {e}")
+    finally:
+        loop.close()
 
 
 def asegurar_receptor_traps_corriendo(app_obj):
     """
-    Administrador de hilos con bloqueo (Mutex Lock). Evita colisiones de puertos 
-    causadas por el doble proceso del Reloader de Flask (Werkzeug).
+    Administrador de hilos con Mutex Lock. Despliega de forma segura el 
+    hilo dedicado asíncrono evitando colisiones del Reloader de Flask.
     """
     global _HILO_LISTENER_TRAPS
     
     with _LOCK_LISTENER:
         if _HILO_LISTENER_TRAPS is not None and _HILO_LISTENER_TRAPS.is_alive():
-            return  # El socket ya está abierto y corriendo felizmente
+            return
 
-        # Levantamos el socket en un hilo daemon aislado
         hilo = threading.Thread(
-            target=ejecutar_servidor_traps_sincrono, 
+            target=lanzar_bucle_asincrono_dedicado, 
             args=(app_obj.app_context(),)
         )
         hilo.daemon = True
