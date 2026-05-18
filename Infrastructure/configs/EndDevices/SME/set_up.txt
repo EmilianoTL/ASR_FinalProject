@@ -13,18 +13,21 @@ chmod 600 ~/.ssh/config
 
 
 # === CLONAR ÚNICAMENTE LA CARPETA 'SME' EN EL HOME ===
-cd home
+# 1. Crea una carpeta vacía para tu proyecto y entra en ella
+mkdir mi_proyecto_sme
+cd mi_proyecto_sme
 
-git clone --filter=blob:none --sparse https://github.com/EmilianoTL/ASR_FinalProject.git
-feature/snmp-telemetry
-cd * 
-REPO_DIR=$(basename "$PWD")
+# 2. Inicializa un repositorio de Git local
+git init
+
+# 3. Conéctate a tu repositorio remoto de GitHub
+git remote add origin https://github.com/EmilianoTL/ASR_FinalProject.git
+
+# 4. Activa la característica de descarga dispersa indicando la carpeta exacta
 git sparse-checkout set SME
 
-mv SME ../
-cd ..
-
-rm -rf "$REPO_DIR"
+# 5. Descarga (Pull) exclusivamente la rama específica que necesitas
+git pull origin feature/snmp-telemetry
 
 # === CONFIGURACIÓN DEL ENTORNO DE PYTHON ===
 

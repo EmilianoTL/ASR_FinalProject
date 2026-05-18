@@ -9,7 +9,7 @@ from database.models import db, MetricaOctetos
 from pysnmp.hlapi.v3arch.asyncio import SnmpEngine, UdpTransportTarget, ContextData, CommunityData, ObjectType, ObjectIdentity, walk_cmd, get_cmd
 from pysnmp.entity.rfc3413 import ntfrcv  # API estándar de entidad según ntfrcv.py
 from pysnmp.carrier.asyncio.dgram import udp  # Transporte nativo de asyncio (base.py)
-from pysnmp.hlapi import config  # API oficial de configuración de entidad
+from pysnmp.entity import config  # API oficial de configuración de entidad
 
 # Variables Globales de Control de Infraestructura
 _HILO_LISTENER_TRAPS = None
@@ -178,43 +178,49 @@ def ejecutar_servidor_traps_sincrono(app_context):
     puerto_traps = int(os.getenv('SNMP_PORT_TRAPS', 162))
     ip_escucha = "0.0.0.0" 
 
+    # 1. Registro del transporte usando udp.DOMAIN (v7.1 estricto)
+    # SOLUCIÓN COMPLEMENTARIA: Le asignamos un event loop propio a este hilo 
+    # para que los componentes internos de asyncio de PySNMP v7 no se rompan
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     snmp_engine = SnmpEngine()
 
-    # 1. Registro del transporte usando udp.DOMAIN (v7.1 estricto)
+    # Tu corrección exacta para el enlace del socket
     try:
         config.addTransport(
             snmp_engine,
-            udp.DOMAIN,  # Cumple requerimiento 1: base.py:90-99
+            udp.domainName,  # <--- Tu corrección exitosa
             udp.UdpTransport().openServerMode((ip_escucha, puerto_traps))
         )
     except Exception as e:
         print(f"❌ [FALLO PUERTO 162] Error crítico de enlace de socket. ¿Es root? Detalle: {e}")
         return
 
-    # 2. Registro formal del NotificationReceiver (ntfrcv.py:17-18)
+    # Registrar el NotificationReceiver
     ntfrcv.NotificationReceiver(
         snmp_engine, 
         procesar_trap_entrante, 
         cbCtx=app_context
     )
 
-    # 3. Forzar persistencia del bucle de red (dispatch.py:58-61)
+    # Forzar persistencia del bucle de red
     snmp_engine.transportDispatcher.jobStarted(1)
 
     print(f"📡 [SERVIDOR UDP TRAPS ONLINE] Escuchando perpetuamente en el puerto {puerto_traps}...")
 
-    # 4. Inicializar el loop de sockets de PySNMP de forma segura
+    # Inicializar el loop de sockets de PySNMP
     try:
         snmp_engine.transportDispatcher.runDispatcher()
     except Exception as e:
         print(f"⚠️ [SERVIDOR TRAPS] Interrupción en el bucle de despacho de red: {e}")
     finally:
-        # Garantiza la limpieza atómica del socket del sistema operativo ante cierres
         try:
             snmp_engine.transportDispatcher.jobFinished(1)
             snmp_engine.transportDispatcher.closeDispatcher()
         except Exception:
             pass
+        loop.close()  # Cerramos el loop local del hilo al finalizar
         print("🛑 [SERVIDOR TRAPS OFFLINE] Socket UDP 162 liberado del sistema.")
 
 

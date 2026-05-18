@@ -351,15 +351,6 @@
                 "z": 2
             },
             {
-                "drawing_id": "d2361ec8-72f3-44eb-9ac8-eeaac2132c9c",
-                "locked": false,
-                "rotation": 0,
-                "svg": "<svg width=\"23\" height=\"24\"><text font-family=\"TypeWriter\" font-size=\"10.0\" font-weight=\"bold\" fill=\"#ffffff\" fill-opacity=\"1.0\">e1</text></svg>",
-                "x": -374,
-                "y": 362,
-                "z": 2
-            },
-            {
                 "drawing_id": "527485b1-b9eb-42b4-ba91-b10829199da2",
                 "locked": false,
                 "rotation": 0,
@@ -1621,10 +1612,24 @@
                     "console_http_path": "/",
                     "console_http_port": 80,
                     "console_resolution": "1024x768",
-                    "container_id": "d726d6f5446c011ebe2a6ae4b1796a493388c4107f5fea0697f9c333b273dcdd",
+                    "container_id": "c5d40b281e9bf15d1df4816b4ede8162ab56d5922c5c639cad925b58f1896815",
                     "environment": "",
                     "extra_hosts": "",
-                    "extra_volumes": [],
+                    "extra_volumes": [
+                        "/bin",
+                        "/boot",
+                        "/fev",
+                        "/etc",
+                        "/gns3",
+                        "/gns3volumes",
+                        "/home",
+                        "/lib",
+                        "/lib64",
+                        "/root",
+                        "/sbin",
+                        "/var",
+                        "/usr"
+                    ],
                     "image": "alpine:latest",
                     "mac_address": "02:42:ca:34:e3:00",
                     "start_command": null,

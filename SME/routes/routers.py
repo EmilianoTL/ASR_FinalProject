@@ -1,6 +1,5 @@
 from flask import Blueprint, jsonify, current_app
 from database.models import *
-from network_utils.snmp_pysnmp import iniciar_monitoreo_hilo
 
 routers_bp = Blueprint('routers', __name__)
 
