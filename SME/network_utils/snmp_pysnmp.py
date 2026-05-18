@@ -6,7 +6,7 @@ from database.models import db, MetricaOctetos
 import threading
 import time
 from flask import current_app
-
+from pysnmp.carrier.asyncio.dgram import udp
 
 COMUNIDAD = os.getenv('SNMP_COMMUNITY', 'asr_proyecto')
 PUERTO_SNMP = int(os.getenv('SNMP_PORT_POLLING', 161))
@@ -262,33 +262,40 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
 
 async def corutina_servidor_traps(app_context):
     """
-    Corutina asíncrona pura basada en la documentación 'NotificationReceiver' de PySNMP v7.1.
-    Abre y mantiene el socket UDP 162 de forma no bloqueante.
+    Corutina asíncrona corregida para PySNMP v7.1.
+    Registra explícitamente el transporte UDP en el puerto 162 en el loop asíncrono.
     """
-    # Importaciones de la arquitectura asíncrona nativa de Lextudio
     
     puerto_traps = int(os.getenv('SNMP_PORT_TRAPS', 162))
-    ip_sme = os.getenv('SME_IP', '0.0.0.0')
-
-    engine = SnmpEngine()
     
-    # IMPORTANTE: En PySNMP v7.1 asyncio, el transporte se añade mediante corutinas de transporte asíncronas
-    # de forma transparente, permitiendo que corra nativamente en el loop de asyncio de Flask.
-    receiver = ntfrcv.NotificationReceiver(
-        engine, 
+    # IMPORTANTE para Docker/Alpine: Escuchamos en 0.0.0.0 para aceptar cualquier interfaz física de GNS3
+    ip_escucha = "0.0.0.0" 
+
+    snmp_engine = SnmpEngine()
+    
+    # Inicializar el socket UDP asíncrono en el motor de PySNMP
+    from pysnmp.hlapi.v3arch import config
+    config.addTransport(
+        snmp_engine,
+        udp.DOMAIN,
+        udp.UdpTransport().openServerMode((ip_escucha, puerto_traps))
+    )
+    
+    # Registrar el receptor de notificaciones vinculado al callback
+    ntfrcv.NotificationReceiver(
+        snmp_engine, 
         procesar_trap_entrante, 
         cbCtx=app_context
     )
 
-    print(f"📡 [SERVIDOR UDP TRAPS ONLINE] Escuchando puerto {puerto_traps} de GNS3 de manera asíncrona...")
+    print(f"📡 [SERVIDOR UDP TRAPS ONLINE] Escuchando activamente en el puerto {puerto_traps}...")
     
-    # Mantenemos viva la escucha asíncrona del socket de red de PySNMP sin bloquear a Flask
     try:
-        while True:
-            await asyncio.sleep(3600) # Mantiene el loop corriendo de forma limpia
+        # Ejecuta de forma indefinida el despachador de eventos asíncronos del socket
+        await snmp_engine.transportDispatcher.runDispatcher()
     except asyncio.CancelledError:
+        snmp_engine.transportDispatcher.closeDispatcher()
         print("🛑 [SERVIDOR TRAPS OFFLINE] Socket UDP 162 cerrado de forma segura.")
-
 
 def asegurar_receptor_traps_corriendo(app_obj):
     """
