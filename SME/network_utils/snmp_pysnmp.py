@@ -1,7 +1,7 @@
 import os
 import asyncio
 from pysnmp.hlapi.v3arch.asyncio import *
-from pysnmp.entity.rfc3413 import ntfrcv
+from pysnmp.entity.rfc3413 import ntfrcv, ntforg
 from database.models import db, MetricaOctetos
 import threading
 import time
@@ -266,8 +266,6 @@ async def corutina_servidor_traps(app_context):
     Abre y mantiene el socket UDP 162 de forma no bloqueante.
     """
     # Importaciones de la arquitectura asíncrona nativa de Lextudio
-    from pysnmp.hlapi.v3arch.asyncio import SnmpEngine, ContextData
-    from pysnmp.entity.rfc3413 import ntforg
     
     puerto_traps = int(os.getenv('SNMP_PORT_TRAPS', 162))
     ip_sme = os.getenv('SME_IP', '0.0.0.0')
@@ -276,7 +274,7 @@ async def corutina_servidor_traps(app_context):
     
     # IMPORTANTE: En PySNMP v7.1 asyncio, el transporte se añade mediante corutinas de transporte asíncronas
     # de forma transparente, permitiendo que corra nativamente en el loop de asyncio de Flask.
-    receiver = ntforg.NotificationReceiver(
+    receiver = ntfrcv.NotificationReceiver(
         engine, 
         procesar_trap_entrante, 
         cbCtx=app_context
