@@ -291,9 +291,10 @@ async def corutina_servidor_traps(app_context):
     print(f"📡 [SERVIDOR UDP TRAPS ONLINE] Escuchando activamente en el puerto {puerto_traps}...")
     
     try:
-        # Ejecuta de forma indefinida el despachador de eventos asíncronos del socket
-        await snmp_engine.transportDispatcher.runDispatcher()
-    except asyncio.CancelledError:
+        snmp_engine.transportDispatcher.runDispatcher()
+    except Exception as e:
+        print(f"⚠️ [SERVIDOR TRAPS] Ocurrió una interrupción en el despachador: {e}")
+    finally:
         snmp_engine.transportDispatcher.closeDispatcher()
         print("🛑 [SERVIDOR TRAPS OFFLINE] Socket UDP 162 cerrado de forma segura.")
 
