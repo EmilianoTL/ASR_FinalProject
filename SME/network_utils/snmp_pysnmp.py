@@ -1,12 +1,13 @@
 import os
 import asyncio
 from pysnmp.hlapi.v3arch.asyncio import *
-from pysnmp.entity.rfc3413 import ntfrcv, ntforg
+from pysnmp.entity.rfc3413 import ntfrcv
+from pysnmp.carrier.asyncio.dgram import udp
+from pysnmp.entity import config
 from database.models import db, MetricaOctetos
 import threading
 import time
 from flask import current_app
-from pysnmp.carrier.asyncio.dgram import udp
 
 COMUNIDAD = os.getenv('SNMP_COMMUNITY', 'asr_proyecto')
 PUERTO_SNMP = int(os.getenv('SNMP_PORT_POLLING', 161))
@@ -274,7 +275,7 @@ async def corutina_servidor_traps(app_context):
     snmp_engine = SnmpEngine()
     
     # Inicializar el socket UDP asíncrono en el motor de PySNMP
-    from pysnmp.hlapi.v3arch import config
+    from pysnmp.hlapi import config
     config.addTransport(
         snmp_engine,
         udp.DOMAIN,
