@@ -1,6 +1,7 @@
 import os
 import asyncio
 from pysnmp.hlapi.v3arch.asyncio import *
+from pysnmp.entity.rfc3413 import ntfrcv
 from database.models import db, MetricaOctetos
 import threading
 import time
