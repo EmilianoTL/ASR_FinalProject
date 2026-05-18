@@ -261,62 +261,75 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
         print(f"   💾 [GUARDADO EN BD] -> Estado actualizado: {tipo_evento}")
 
 
-async def corutina_servidor_traps(app_context):
+def ejecutar_servidor_traps_sincrono(app_context):
     """
-    Corutina asíncrona corregida para PySNMP v7.1.
-    Registra explícitamente el transporte UDP en el puerto 162 en el loop asíncrono.
+    Levanta un socket UDP real en el puerto 162 de forma robusta e indestructible.
+    Implementa 'jobStarted(1)' inspirado en el repositorio de gabrielmarques22 
+    para forzar la persistencia del Socket UDP en el sistema operativo.
     """
-    
+    from pysnmp.hlapi.v3arch.asyncio import SnmpEngine
+    from pysnmp.entity.rfc3413.asyncio import ntfrcv  # API asíncrona nativa de v7
+    from pysnmp.carrier.asyncio.dgram import udp
+    from pysnmp.hlapi import config
+    import os
+
     puerto_traps = int(os.getenv('SNMP_PORT_TRAPS', 162))
-    
-    # IMPORTANTE para Docker/Alpine: Escuchamos en 0.0.0.0 para aceptar cualquier interfaz física de GNS3
-    ip_escucha = "0.0.0.0" 
+    ip_escucha = "0.0.0.0"  # Escucha en cualquier interfaz de red de GNS3
 
     snmp_engine = SnmpEngine()
-    
- 
-    config.addTransport(
-        snmp_engine,
-        udp.DOMAIN_NAME,
-        udp.UdpTransport().openServerMode((ip_escucha, puerto_traps))
-    )
-    
-    # Registrar el receptor de notificaciones vinculado al callback
+
+    # 1. Configurar y forzar la apertura del puerto 162 en Alpine Linux
+    try:
+        config.addTransport(
+            snmp_engine,
+            udp.DOMAIN,
+            udp.UdpTransport().openServerMode((ip_escucha, puerto_traps))
+        )
+    except Exception as e:
+        print(f"❌ [FALLO PUERTO 162] No se pudo abrir el socket UDP {puerto_traps}. Detalle: {e}")
+        return
+
+    # 2. Registrar el NotificationReceiver vinculando tu callback y el app_context de Flask
     ntfrcv.NotificationReceiver(
         snmp_engine, 
         procesar_trap_entrante, 
         cbCtx=app_context
     )
 
-    print(f"📡 [SERVIDOR UDP TRAPS ONLINE] Escuchando activamente en el puerto {puerto_traps}...")
-    
+    # === LA SOLUCIÓN DEL REPOSITORIO (MANTENER EL SOCKET ALERTA PERPETUAMENTE) ===
+    # Le indicamos al despachador que registre un trabajo continuo para que no se autocancele
+    snmp_engine.transportDispatcher.jobStarted(1)
+    # ==============================================================================
+
+    print(f"📡 [SERVIDOR UDP TRAPS ONLINE] Escuchando perpetuamente en el puerto {puerto_traps}...")
+
+    # 3. Arrancar el loop de escucha de red puro de PySNMP
     try:
         snmp_engine.transportDispatcher.runDispatcher()
     except Exception as e:
-        print(f"⚠️ [SERVIDOR TRAPS] Ocurrió una interrupción en el despachador: {e}")
+        print(f"⚠️ [SERVIDOR TRAPS] Interrupción en el despachador de red: {e}")
     finally:
+        # Si el hilo es destruido por Flask al apagar la app, liberamos el puerto
+        snmp_engine.transportDispatcher.jobFinished(1)
         snmp_engine.transportDispatcher.closeDispatcher()
-        print("🛑 [SERVIDOR TRAPS OFFLINE] Socket UDP 162 cerrado de forma segura.")
+        print("🛑 [SERVIDOR TRAPS OFFLINE] Socket UDP 162 liberado del sistema.")
 
 def asegurar_receptor_traps_corriendo(app_obj):
     """
-    Iniciador de seguridad. Revisa el loop de asyncio de Flask y asegura que el 
-    NotificationReceiver esté activo en background en un hilo daemon si es necesario, 
-    evitando colisiones del Reloader de Werkzeug.
+    Asegura que el socket de red del puerto 162 esté levantado y vivo en background.
     """
-    global _TAREA_LISTENER_TRAPS
+    global _HILO_LISTENER_TRAPS
     
-    if _TAREA_LISTENER_TRAPS is not None:
-        return # Ya está corriendo en segundo plano el socket principal
-        
+    if _HILO_LISTENER_TRAPS is not None and _HILO_LISTENER_TRAPS.is_alive():
+        return  # El socket ya está abierto y operando perfectamente
+
     import threading
     
-    def lanzar_bucle_asincrono(app_context):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(corutina_servidor_traps(app_context))
-
-    hilo = threading.Thread(target=lanzar_bucle_asincrono, args=(app_obj.app_context(),))
+    # Lanzamos el despachador en un hilo daemon dedicado e inmune a asyncio
+    hilo = threading.Thread(
+        target=ejecutar_servidor_traps_sincrono, 
+        args=(app_obj.app_context(),)
+    )
     hilo.daemon = True
     hilo.start()
-    _TAREA_LISTENER_TRAPS = hilo
+    _HILO_LISTENER_TRAPS = hilo
