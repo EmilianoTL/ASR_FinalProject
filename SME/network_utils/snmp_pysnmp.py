@@ -6,7 +6,6 @@ import threading
 import time
 from flask import current_app
 
-HILOS_MONITOREO_ACTIVOS = {}
 
 COMUNIDAD = os.getenv('SNMP_COMMUNITY', 'asr_proyecto')
 PUERTO_SNMP = int(os.getenv('SNMP_PORT_POLLING', 161))
@@ -130,12 +129,13 @@ def proceso_monitoreo_continuo(app_context, hostname, ip_admin, interfaz_api, ti
     iteraciones = int(tiempo_total) // intervalo
     
     identificador_unico = f"{hostname}_{interfaz_api}"
-    HILOS_MONITOREO_ACTIVOS[identificador_unico] = True
+    app_obj = app_context.app
+    app_obj.hilos_snmp_activos[identificador_unico] = True
 
     with app_context: 
         for _ in range(iteraciones):
             # REGLA DEL DELETE: Si la bandera pasa a False, rompemos el ciclo y el hilo muere
-            if not HILOS_MONITOREO_ACTIVOS.get(identificador_unico, False):
+            if not app_obj.hilos_snmp_activos.get(identificador_unico, False):
                 print(f"[THREAD] Monitoreo detenido manualmente para {identificador_unico}")
                 break
                 
@@ -143,7 +143,7 @@ def proceso_monitoreo_continuo(app_context, hostname, ip_admin, interfaz_api, ti
             time.sleep(intervalo)
             
         # Limpieza al terminar el tiempo o ser destruido
-        HILOS_MONITOREO_ACTIVOS.pop(identificador_unico, None)
+        app_obj.hilos_snmp_activos.pop(identificador_unico, None)
 
 def iniciar_monitoreo_hilo(app_obj, hostname, ip_admin, interfaz_api, tiempo_total):
     """
@@ -151,7 +151,7 @@ def iniciar_monitoreo_hilo(app_obj, hostname, ip_admin, interfaz_api, tiempo_tot
     """
     hilo = threading.Thread(
         target=proceso_monitoreo_continuo,
-        args=(app_obj.app_context(), hostname, ip_admin, interfaz_api, tiempo_total)
+        args=(current_app._get_current_object().app_context(), hostname, ip_admin, interfaz_api, tiempo_total)
     )
     hilo.daemon = True
     hilo.start()
@@ -159,22 +159,13 @@ def iniciar_monitoreo_hilo(app_obj, hostname, ip_admin, interfaz_api, tiempo_tot
 
 def detener_monitoreo_interfaz(hostname, interfaz_api):
     """
-    Cambia la bandera global a False para forzar la parada del hilo secundario.
+    Modifica la bandera en la app global. Compatible con peticiones DELETE masivas.
     """
     identificador_unico = f"{hostname}_{interfaz_api}"
-    if identificador_unico in HILOS_MONITOREO_ACTIVOS:
-        HILOS_MONITOREO_ACTIVOS[identificador_unico] = False
+    
+    # Accedemos de forma segura a través del contexto actual de Flask
+    if identificador_unico in current_app.hilos_snmp_activos:
+        current_app.hilos_snmp_activos[identificador_unico] = False
         return {"error": False, "mensaje": f"Proceso de monitoreo en {interfaz_api} detenido exitosamente."}
     
     return {"error": True, "mensaje": f"No hay un proceso de monitoreo activo para la interfaz {interfaz_api}."}
-    """
-    Crea el hilo y lo lanza sin bloquear la API.
-    """
-    hilo = threading.Thread(
-        target=proceso_monitoreo_continuo,
-        args=(app_obj.app_context(), hostname, ip_admin, interfaz_api, tiempo_total)
-    )
-    hilo.daemon = True  # Si la API se apaga, el hilo también muere
-    hilo.start()
-    
-    return {"error": False, "mensaje": f"Monitoreo iniciado en {interfaz_api} por {tiempo_total} segundos."}

@@ -16,6 +16,7 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+app.hilos_snmp_activos = {}
 
 nombre_db = os.getenv('DB_NAME', 'red_asr.db')
 puerto_app = int(os.getenv('FLASK_PUERTO', 5000))
