@@ -274,8 +274,7 @@ async def corutina_servidor_traps(app_context):
 
     snmp_engine = SnmpEngine()
     
-    # Inicializar el socket UDP asíncrono en el motor de PySNMP
-    from pysnmp.hlapi import config
+ 
     config.addTransport(
         snmp_engine,
         udp.DOMAIN,
