@@ -127,15 +127,96 @@ def stop_octetos(hostname, interfaz, tiempo):
 # --- GESTIÓN DE TRAPS (LINKUP/LINKDOWN) ---
 @routers_bp.route('/<hostname>/interfaces/<interfaz>/estado', methods=['GET'])
 def get_traps_estado(hostname, interfaz):
-    return jsonify({"mensaje": f"Estado de la interfaz {interfaz}"}), 200
+    """
+    GET: Regresa el JSON con el estado de la interfaz (determinado por la última trampa)
+         y el historial completo de eventos capturados.
+    """
+    router = Router.query.filter_by(hostname=hostname).first()
+    if not router:
+        return jsonify({"error": True, "mensaje": "Router no encontrado."}), 404
+
+    identificador_unico = f"{hostname}_{interfaz}_traps"
+    captura_activa = current_app.hilos_snmp_activos.get(identificador_unico, False)
+
+    # 1. Consultar el historial de eventos guardados en la BD
+    alertas = EventoTrap.query.filter_by(
+        router_hostname=hostname,
+        interfaz_api=interfaz
+    ).order_by(EventoTrap.timestamp.desc()).all()
+
+    # 2. Determinar el estado actual de la interfaz de forma estricta
+    # Si hay alertas, el estado actual es el del evento más reciente. Si no hay, asumimos "Unknown" o "Normal"
+    estado_actual = alertas[0].tipo_evento if len(alertas) > 0 else "Unknown (No traps captured yet)"
+
+    historial_eventos = [
+        {
+            "id": a.id,
+            "tipo_evento": a.tipo_evento,
+            "timestamp": a.timestamp.isoformat()
+        }
+        for a in alertas
+    ]
+
+    return jsonify({
+        "router": hostname,
+        "interfaz": interfaz,
+        "captura_automatica_activa": captura_activa,
+        "estado_actual_interfaz": estado_actual, # <-- Cumple: "Regresar el JSON con el estado"
+        "total_eventos_registrados": len(historial_eventos),
+        "historial": historial_eventos
+    }), 200
 
 @routers_bp.route('/<hostname>/interfaces/<interfaz>/estado', methods=['POST'])
 def start_traps(hostname, interfaz):
-    return jsonify({"mensaje": f"Activa captura de trampas en {interfaz}"}), 200
+    """
+    POST: Activa la captura de trampas SNMP de forma estricta.
+          Asegura que el NotificationReceiver asíncrono esté escuchando en background.
+    """
+    router = Router.query.filter_by(hostname=hostname).first()
+    if not router:
+        return jsonify({"error": True, "mensaje": "Router no encontrado."}), 404
+
+    from network_utils.snmp_pysnmp import asegurar_receptor_traps_corriendo
+    
+    # Asegura que el socket UDP 162 esté arriba de forma asíncrona nativa (PySNMP v7)
+    asegurar_receptor_traps_corriendo(current_app._get_current_object())
+
+    identificador_unico = f"{hostname}_{interfaz}_traps"
+    
+    # Activamos el switch en la memoria de la app para que el callback asimile los paquetes
+    current_app.hilos_snmp_activos[identificador_unico] = True
+    
+    print(f"🟩 [FILTRO ACTIVADO] -> Capturando trampas estrictas para {identificador_unico}")
+    return jsonify({
+        "error": False,
+        "mensaje": f"Captura de trampas activada de forma estricta para la interfaz {interfaz}."
+    }), 200
 
 @routers_bp.route('/<hostname>/interfaces/<interfaz>/estado', methods=['DELETE'])
 def stop_traps(hostname, interfaz):
-    return jsonify({"mensaje": f"Para la captura de trampas en {interfaz}"}), 200
+    """
+    DELETE: Para inmediatamente la captura de trampas SNMP para esta interfaz.
+    Cualquier trampa que mande el router a partir de este momento será ignorada de forma segura.
+    """
+    router = Router.query.filter_by(hostname=hostname).first()
+    if not router:
+        return jsonify({"error": True, "mensaje": "Router no encontrado."}), 404
+
+    identificador_unico = f"{hostname}_{interfaz}_traps"
+    
+    if identificador_unico in current_app.hilos_snmp_activos:
+        # Ponemos la bandera en False (Parar captura)
+        current_app.hilos_snmp_activos[identificador_unico] = False
+        print(f"🟥 [CAPTURA PARADA] -> Ignorando trampas futuras para {identificador_unico}")
+        return jsonify({
+            "error": False,
+            "mensaje": f"Captura de trampas detenida exitosamente para la interfaz {interfaz}."
+        }), 200
+        
+    return jsonify({
+        "error": True,
+        "mensaje": f"No hay una captura de trampas activa para la interfaz {interfaz}."
+    }), 400
 
 
 # --- GRÁFICA DE MONITOREO ---

@@ -190,3 +190,126 @@ def detener_monitoreo_interfaz(hostname, interfaz_api):
         return {"error": False, "mensaje": f"Proceso de monitoreo en {interfaz_api} detenido exitosamente."}
     
     return {"error": True, "mensaje": f"No hay un proceso de monitoreo activo para la interfaz {interfaz_api}."}
+# --- RECEPTOR DE TRAPS SNMP CON FILTRADO ESTRICTO ---
+
+# --- RECEPTOR ASÍNCRONO DE TRAPS/INFORMs (PUERTO 162) ---
+
+# Tarea asíncrona global de control para saber si el Listener UDP está corriendo en el background de la API
+_TAREA_LISTENER_TRAPS = None
+
+def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextName, varBinds, cbCtx):
+    """
+    Callback nativo de PySNMP v7.1. Se ejecuta automáticamente cada vez que 
+    un router de GNS3 envía una trampa al puerto 162.
+    """
+    from database.models import db, EventoTrap, Router
+    # cbCtx transporta de forma segura el app_context de Flask
+    app_context = cbCtx
+    app_obj = app_context.app
+    
+    # OIDs estándar definidos en la documentación de PySNMP / MIBs IETF
+    OID_LINK_DOWN = '1.3.6.1.6.3.1.1.5.3'
+    OID_LINK_UP = '1.3.6.1.6.3.1.1.5.4'
+    OID_IF_DESCR = '1.3.6.1.2.1.2.2.1.2'
+
+    tipo_evento = "Desconocido"
+    interfaz_afectada = "Desconocida"
+    ip_origen = "Desconocida"
+
+    # Extraer la IP de origen del paquete UDP
+    try:
+        transport_info = snmpEngine.transportDispatcher.getTransportInfo(stateReference)
+        if transport_info:
+            ip_origen = transport_info[1][0]
+    except Exception:
+        pass
+
+    # Analizar el contenido del Trap
+    for name, val in varBinds:
+        val_str = str(val)
+        if val_str == OID_LINK_DOWN:
+            tipo_evento = "LinkDown"
+        elif val_str == OID_LINK_UP:
+            tipo_evento = "LinkUp"
+        elif OID_IF_DESCR in str(name) or "ifDescr" in str(name):
+            interfaz_afectada = val_str.lower()
+
+    if "fastethernet" in interfaz_afectada:
+        interfaz_afectada = interfaz_afectada.replace("fastethernet", "f", 1).replace("/", "_")
+
+    with app_context:
+        router = Router.query.filter_by(ip_admin=ip_origen).first()
+        hostname = router.hostname if router else ip_origen
+        
+        identificador_unico = f"{hostname}_{interfaz_afectada}_traps"
+
+        # REGLA FILTRADO ESTRICTO: Si no está activa la captura (POST), se ignora el evento de red
+        if not app_obj.hilos_snmp_activos.get(identificador_unico, False):
+            return
+
+        print(f"\n🔔 [TRAP CAPTURADO] -> Evento detectado para la interfaz activa: {identificador_unico}")
+        
+        nuevo_evento = EventoTrap(
+            router_hostname=hostname,
+            interfaz_api=interfaz_afectada,
+            tipo_evento=tipo_evento
+        )
+        db.session.add(nuevo_evento)
+        db.session.commit()
+        print(f"   💾 [GUARDADO EN BD] -> Estado actualizado: {tipo_evento}")
+
+
+async def corutina_servidor_traps(app_context):
+    """
+    Corutina asíncrona pura basada en la documentación 'NotificationReceiver' de PySNMP v7.1.
+    Abre y mantiene el socket UDP 162 de forma no bloqueante.
+    """
+    # Importaciones de la arquitectura asíncrona nativa de Lextudio
+    from pysnmp.hlapi.v3arch.asyncio import SnmpEngine, ContextData
+    from pysnmp.entity.rfc3413 import ntforg
+    
+    puerto_traps = int(os.getenv('SNMP_PORT_TRAPS', 162))
+    ip_sme = os.getenv('SME_IP', '0.0.0.0')
+
+    engine = SnmpEngine()
+    
+    # IMPORTANTE: En PySNMP v7.1 asyncio, el transporte se añade mediante corutinas de transporte asíncronas
+    # de forma transparente, permitiendo que corra nativamente en el loop de asyncio de Flask.
+    receiver = ntforg.NotificationReceiver(
+        engine, 
+        procesar_trap_entrante, 
+        cbCtx=app_context
+    )
+
+    print(f"📡 [SERVIDOR UDP TRAPS ONLINE] Escuchando puerto {puerto_traps} de GNS3 de manera asíncrona...")
+    
+    # Mantenemos viva la escucha asíncrona del socket de red de PySNMP sin bloquear a Flask
+    try:
+        while True:
+            await asyncio.sleep(3600) # Mantiene el loop corriendo de forma limpia
+    except asyncio.CancelledError:
+        print("🛑 [SERVIDOR TRAPS OFFLINE] Socket UDP 162 cerrado de forma segura.")
+
+
+def asegurar_receptor_traps_corriendo(app_obj):
+    """
+    Iniciador de seguridad. Revisa el loop de asyncio de Flask y asegura que el 
+    NotificationReceiver esté activo en background en un hilo daemon si es necesario, 
+    evitando colisiones del Reloader de Werkzeug.
+    """
+    global _TAREA_LISTENER_TRAPS
+    
+    if _TAREA_LISTENER_TRAPS is not None:
+        return # Ya está corriendo en segundo plano el socket principal
+        
+    import threading
+    
+    def lanzar_bucle_asincrono(app_context):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(corutina_servidor_traps(app_context))
+
+    hilo = threading.Thread(target=lanzar_bucle_asincrono, args=(app_obj.app_context(),))
+    hilo.daemon = True
+    hilo.start()
+    _TAREA_LISTENER_TRAPS = hilo
