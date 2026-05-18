@@ -120,42 +120,63 @@ if __name__ == '__main__':
         print("\nResultado:")
         print(resultado)
 
-def proceso_monitoreo_continuo(app_context, hostname, ip_admin, interfaz_api, tiempo_total):
+def proceso_monitoreo_continuo(app_context, hostname, ip_admin, interfaz_api, intervalo):
     """
-    Función que vive en un Hilo (Thread). 
-    Revisa en cada ciclo si la bandera sigue activa antes de tomar la muestra.
+    Función que vive en un Hilo (Thread).
+    Corre de forma indefinida usando el <tiempo> de la URL como el intervalo de sondeo,
+    hasta que se recibe un DELETE.
     """
-    intervalo = int(os.getenv('POLLING_INTERVAL', 10))
-    iteraciones = int(tiempo_total) // intervalo
-    
     identificador_unico = f"{hostname}_{interfaz_api}"
+    
+    print(f"\n🚀 [MONITOREO SNMP INICIADO] -> Router: {hostname} | Interfaz: {interfaz_api}")
+    print(f"   🔄 Frecuencia de consulta (Sondeo): Cada {intervalo}s | Estado: Corriendo indefinidamente")
+    
     app_obj = app_context.app
     app_obj.hilos_snmp_activos[identificador_unico] = True
 
     with app_context: 
-        for _ in range(iteraciones):
-            # REGLA DEL DELETE: Si la bandera pasa a False, rompemos el ciclo y el hilo muere
+        contador_muestras = 1
+        while True:
+            # REGLA CRÍTICA: Si el endpoint DELETE cambia la bandera a False, el hilo muere inmediatamente
             if not app_obj.hilos_snmp_activos.get(identificador_unico, False):
-                print(f"[THREAD] Monitoreo detenido manualmente para {identificador_unico}")
+                print(f"🛑 [MONITOREO DETENIDO] -> El proceso continuo para {identificador_unico} ha sido finalizado.")
                 break
                 
-            recolectar_octetos(hostname, ip_admin, interfaz_api)
-            time.sleep(intervalo)
+            print(f"📊 [MUESTRA #{contador_muestras}] -> Consultando {identificador_unico} ({ip_admin})...")
+            resultado = recolectar_octetos(hostname, ip_admin, interfaz_api)
             
-        # Limpieza al terminar el tiempo o ser destruido
+            if resultado.get("error"):
+                print(f"   ⚠️ [ERROR EN MUESTRA #{contador_muestras}] -> {resultado.get('mensaje')}")
+            else:
+                octetos = resultado["datos"]["octetos_entrada"]
+                print(f"   ✅ [MUESTRA #{contador_muestras} GUARDADA] -> Octetos: {octetos}")
+                
+            contador_muestras += 1
+            
+            # Duerme los segundos exactos indicados en el <tiempo> de la URL
+            time.sleep(int(intervalo))
+            
+        # Limpieza de la bandera al salir del ciclo
         app_obj.hilos_snmp_activos.pop(identificador_unico, None)
 
-def iniciar_monitoreo_hilo(app_obj, hostname, ip_admin, interfaz_api, tiempo_total):
+
+def iniciar_monitoreo_hilo(app_obj, hostname, ip_admin, interfaz_api, intervalo):
     """
-    Crea el hilo de sondeo continuo y lo lanza.
+    Lanza el hilo de sondeo continuo regulado por el intervalo de la URL.
     """
     hilo = threading.Thread(
         target=proceso_monitoreo_continuo,
-        args=(current_app._get_current_object().app_context(), hostname, ip_admin, interfaz_api, tiempo_total)
+        args=(app_obj.app_context(), hostname, ip_admin, interfaz_api, intervalo)
     )
     hilo.daemon = True
     hilo.start()
-    return {"error": False, "mensaje": f"Monitoreo iniciado en {interfaz_api} por {tiempo_total} segundos."}
+    return {
+        "error": False, 
+        "mensaje": f"Monitoreo continuo e indefinido activado en {interfaz_api}.",
+        "configuracion": {
+            "intervalo_muestreo_segundos": intervalo
+        }
+    }
 
 def detener_monitoreo_interfaz(hostname, interfaz_api):
     """
