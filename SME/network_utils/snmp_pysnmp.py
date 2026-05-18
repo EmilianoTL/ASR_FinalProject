@@ -9,6 +9,7 @@ import threading
 import time
 from flask import current_app
 
+_HILO_LISTENER_TRAPS = None
 COMUNIDAD = os.getenv('SNMP_COMMUNITY', 'asr_proyecto')
 PUERTO_SNMP = int(os.getenv('SNMP_PORT_POLLING', 161))
 
