@@ -24,7 +24,7 @@ class Router(db.Model):
     # --- RELACIONES ---
     # Relación 1:N con Interfaces (Un router tiene muchas interfaces)
     # backref='propietario' permite hacer: interfaz.propietario para saber de qué router es.
-    interfaces = db.relationship('Interface', backref='propietario', lazy=True, cascade="all, delete-orphan")
+    interfaces = db.relationship('Interface',foreign_keys='Interface.router_id', backref='propietario', lazy=True, cascade="all, delete-orphan")
     
     # Relación N:N con Usuarios usando la tabla intermedia definida arriba.
     usuarios_instalados = db.relationship('Usuario', secondary=router_usuarios, backref='routers_donde_vive')

@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 
 from database.models import db
+from database.seed import ejecutar_poblado_inicial
 from sqlalchemy import text 
 from routes.usuarios import usuarios_bp
 from routes.routers import routers_bp
@@ -63,4 +64,6 @@ def health_check():
         }), 500
 
 if __name__ == '__main__':
+    with app.app_context():
+        ejecutar_poblado_inicial()
     app.run(host='0.0.0.0', port=puerto_app, debug=modo_debug)
