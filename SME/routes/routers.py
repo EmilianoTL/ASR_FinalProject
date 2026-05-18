@@ -77,20 +77,45 @@ def get_octetos(hostname, interfaz, tiempo):
 def start_octetos(hostname, interfaz, tiempo):
     """
     Activa el monitoreo en segundo plano.
+    Limpia las muestras antiguas de esta interfaz en la BD antes de iniciar.
     """
+    # 1. Validar existencia del router (Regla general 2 del PDF)
     router = Router.query.filter_by(hostname=hostname).first()
     if not router:
         return jsonify({"error": True, "mensaje": "Router no encontrado en la topología."}), 404
 
-    from network_utils.snmp_pysnmp import iniciar_monitoreo_hilo
-    resultado = iniciar_monitoreo_hilo(
-        current_app._get_current_object(), 
-        hostname, 
-        router.ip_admin, 
-        interfaz, 
-        int(tiempo)
-    )
-    return jsonify(resultado), 200
+    try:
+        # === NUEVA LÓGICA DE LIMPIEZA ===
+        # 2. Borrar las muestras acumuladas anteriormente para esta interfaz específica
+        muestras_viejas = MetricaOctetos.query.filter_by(
+            router_hostname=hostname, 
+            interfaz_api=interfaz
+        )
+        conteo_borrados = muestras_viejas.count()
+        
+        if conteo_borrados > 0:
+            muestras_viejas.delete(synchronize_session=False)
+            db.session.commit()
+            print(f"[BD] Se eliminaron {conteo_borrados} muestras antiguas de {hostname} ({interfaz}) para iniciar el nuevo monitoreo.")
+        # =================================
+
+        # 3. Iniciar el nuevo hilo de monitoreo continuo
+        from network_utils.snmp_pysnmp import iniciar_monitoreo_hilo
+        resultado = iniciar_monitoreo_hilo(
+            current_app._get_current_object(), 
+            hostname, 
+            router.ip_admin, 
+            interfaz, 
+            int(tiempo)
+        )
+        
+        # Opcional: Añadimos al JSON de respuesta el aviso de que la BD fue limpiada
+        resultado["muestras_previas_limpiadas"] = conteo_borrados
+        return jsonify(resultado), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": True, "mensaje": f"Error al preparar la base de datos: {str(e)}"}), 500
 
 @routers_bp.route('/<hostname>/interfaces/<interfaz>/octetos/<tiempo>', methods=['DELETE'])
 def stop_octetos(hostname, interfaz, tiempo):
