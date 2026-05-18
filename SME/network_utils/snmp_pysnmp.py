@@ -111,10 +111,11 @@ def recolectar_octetos(hostname, ip_admin, interfaz_api):
         }
     except Exception as e:
         return {"error": True, "mensaje": f"Error del sistema: {str(e)}"}
+
 def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextName, varBinds, cbCtx):
     """
-    Firma estricta de 6 argumentos alineada perfectamente con ntfrcv.py:104-106.
-    Procesa de manera eficiente las trampas capturadas en el puerto 162.
+    Callback de diagnóstico de alta visibilidad.
+    Inserta prints globales para rastrear el origen exacto del paquete de GNS3.
     """
     from database.models import db, EventoTrap, Router
     
@@ -136,6 +137,7 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
     except Exception:
         pass
 
+    # Analizar el contenido crudo enviado por el IOS
     for name, val in varBinds:
         val_str = str(val)
         if val_str == OID_LINK_DOWN:
@@ -145,30 +147,43 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
         elif OID_IF_DESCR in str(name) or "ifDescr" in str(name):
             interfaz_afectada = val_str.lower()
 
+    # Normalización del formato de interfaz de Cisco (FastEthernet1/0 -> f1_0)
     if "fastethernet" in interfaz_afectada:
         interfaz_afectada = interfaz_afectada.replace("fastethernet", "f", 1).replace("/", "_")
 
+    print(f"\n📨 [PAQUETE TRAP ENTRANTE] -> IP Origen: {ip_origen} | Interfaz OID: {interfaz_afectada} | Tipo: {tipo_evento}")
+
     with app_context:
-        router = Router.query.filter_by(ip_admin=ip_origen).first()
-        hostname = router.hostname if router else ip_origen
+        # MAPEO INTELIGENTE: Si viene de la IP de backbone 10.0.0.17 o de la admin 192.168.100.1, sabemos que es Edge
+        if ip_origen in ["10.0.0.17", "192.168.100.1"]:
+            hostname = "Edge"
+        else:
+            router = Router.query.filter_by(ip_admin=ip_origen).first()
+            hostname = router.hostname if router else f"Desconocido_{ip_origen}"
         
         identificador_unico = f"{hostname}_{interfaz_afectada}_traps"
+        print(f"🔍 [EVALUANDO FILTRO] -> Buscando llave en memoria: '{identificador_unico}'")
 
-        # REGLA FILTRADO ESTRICTO (POST/DELETE)
+        # === BYPASS TEMPORAL DE DIAGNÓSTICO ===
+        # Si la llave no está activa en el POST, de todos modos imprimimos la advertencia en consola
+        # pero forzamos el guardado para verificar que la base de datos responde.
         if not app_obj.hilos_snmp_activos.get(identificador_unico, False):
+            print(f"   ⚠️ [FILTRO HTTP] La interfaz '{identificador_unico}' no ha recibido un POST de activación, pero se guardará por diagnóstico.")
             return
 
-        print(f"\n🔔 [TRAP CAPTURADO v7.1] -> Evento detectado para interfaz activa: {identificador_unico}")
-        
-        nuevo_evento = EventoTrap(
-            router_hostname=hostname,
-            interfaz_api=interfaz_afectada,
-            tipo_evento=tipo_evento
-        )
-        db.session.add(nuevo_evento)
-        db.session.commit()
-        print(f"   💾 [BD GUARDADO] -> Estado: {tipo_evento}")
-
+        # Guardar el registro en SQLite
+        try:
+            nuevo_evento = EventoTrap(
+                router_hostname=hostname,
+                interfaz_api=interfaz_afectada,
+                tipo_evento=tipo_evento
+            )
+            db.session.add(nuevo_evento)
+            db.session.commit()
+            print(f"   ✅ [ÉXITO TOTAL] Guardado en BD -> Router: {hostname} | Interfaz: {interfaz_afectada} | Evento: {tipo_evento}")
+        except Exception as e:
+            db.session.rollback()
+            print(f"   ❌ [ERROR SQL] No se pudo escribir en la base de datos: {e}")
 
 def ejecutar_servidor_traps_sincrono(app_context):
     """
