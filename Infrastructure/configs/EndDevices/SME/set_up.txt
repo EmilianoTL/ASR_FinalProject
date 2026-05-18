@@ -2,14 +2,6 @@
 apk update && apk add bash curl nano iputils openssh-client python3 py3-pip \
     gcc musl-dev python3-dev libffi-dev openssl-dev build-base sqlite git
 
-# === CONFIGURACIÓN DEL ENTORNO DE PYTHON ===
-
-python3 -m venv venv
-source venv/bin/activate
-
-pip install --upgrade pip
-pip install -r requirements.txt
-
 # === CONFIGURACIÓN DE COMPATIBILIDAD SSH (PARA CISCO IOS ANTIGUO) ===
 
 mkdir -p ~/.ssh
@@ -24,6 +16,7 @@ chmod 600 ~/.ssh/config
 cd home
 
 git clone --filter=blob:none --sparse https://github.com/EmilianoTL/ASR_FinalProject.git
+feature/snmp-telemetry
 cd * 
 REPO_DIR=$(basename "$PWD")
 git sparse-checkout set SME
@@ -32,3 +25,11 @@ mv SME ../
 cd ..
 
 rm -rf "$REPO_DIR"
+
+# === CONFIGURACIÓN DEL ENTORNO DE PYTHON ===
+
+python3 -m venv venv
+source venv/bin/activate
+
+pip install --upgrade pip
+pip install -r requirements.txt
