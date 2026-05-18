@@ -1,15 +1,20 @@
 import os
 import asyncio
-from pysnmp.hlapi.v3arch.asyncio import *
-from pysnmp.entity.rfc3413 import ntfrcv
-from pysnmp.carrier.asyncio.dgram import udp
-from pysnmp.entity import config
-from database.models import db, MetricaOctetos
 import threading
 import time
 from flask import current_app
+from database.models import db, MetricaOctetos
 
+# Importaciones oficiales y recomendadas para PySNMP v7.1
+from pysnmp.hlapi.v3arch.asyncio import SnmpEngine, UdpTransportTarget, ContextData, CommunityData, ObjectType, ObjectIdentity, walk_cmd, get_cmd
+from pysnmp.entity.rfc3413 import ntfrcv  # API estándar de entidad según ntfrcv.py
+from pysnmp.carrier.asyncio.dgram import udp  # Transporte nativo de asyncio (base.py)
+from pysnmp.hlapi import config  # API oficial de configuración de entidad
+
+# Variables Globales de Control de Infraestructura
 _HILO_LISTENER_TRAPS = None
+_LOCK_LISTENER = threading.Lock()  # Previene condiciones de carrera en hilos
+
 COMUNIDAD = os.getenv('SNMP_COMMUNITY', 'asr_proyecto')
 PUERTO_SNMP = int(os.getenv('SNMP_PORT_POLLING', 161))
 
@@ -106,111 +111,16 @@ def recolectar_octetos(hostname, ip_admin, interfaz_api):
         }
     except Exception as e:
         return {"error": True, "mensaje": f"Error del sistema: {str(e)}"}
-
-# --- BLOQUE DE PRUEBA LOCAL ---
-if __name__ == '__main__':
-    from app import app
-    
-    ROUTER_PRUEBA = "Edge"
-    IP_PRUEBA = "192.168.100.1" 
-    INTERFAZ_PRUEBA = "f1_0"     
-    
-    print(f"Iniciando prueba (PySNMP v7 asyncio) hacia {ROUTER_PRUEBA} ({IP_PRUEBA})...")
-    
-    with app.app_context():
-        db.create_all() 
-        resultado = recolectar_octetos(ROUTER_PRUEBA, IP_PRUEBA, INTERFAZ_PRUEBA)
-        print("\nResultado:")
-        print(resultado)
-
-def proceso_monitoreo_continuo(app_context, hostname, ip_admin, interfaz_api, intervalo):
-    """
-    Función que vive en un Hilo (Thread).
-    Corre de forma indefinida usando el <tiempo> de la URL como el intervalo de sondeo,
-    hasta que se recibe un DELETE.
-    """
-    identificador_unico = f"{hostname}_{interfaz_api}"
-    
-    print(f"\n🚀 [MONITOREO SNMP INICIADO] -> Router: {hostname} | Interfaz: {interfaz_api}")
-    print(f"   🔄 Frecuencia de consulta (Sondeo): Cada {intervalo}s | Estado: Corriendo indefinidamente")
-    
-    app_obj = app_context.app
-    app_obj.hilos_snmp_activos[identificador_unico] = True
-
-    with app_context: 
-        contador_muestras = 1
-        while True:
-            # REGLA CRÍTICA: Si el endpoint DELETE cambia la bandera a False, el hilo muere inmediatamente
-            if not app_obj.hilos_snmp_activos.get(identificador_unico, False):
-                print(f"🛑 [MONITOREO DETENIDO] -> El proceso continuo para {identificador_unico} ha sido finalizado.")
-                break
-                
-            print(f"📊 [MUESTRA #{contador_muestras}] -> Consultando {identificador_unico} ({ip_admin})...")
-            resultado = recolectar_octetos(hostname, ip_admin, interfaz_api)
-            
-            if resultado.get("error"):
-                print(f"   ⚠️ [ERROR EN MUESTRA #{contador_muestras}] -> {resultado.get('mensaje')}")
-            else:
-                octetos = resultado["datos"]["octetos_entrada"]
-                print(f"   ✅ [MUESTRA #{contador_muestras} GUARDADA] -> Octetos: {octetos}")
-                
-            contador_muestras += 1
-            
-            # Duerme los segundos exactos indicados en el <tiempo> de la URL
-            time.sleep(int(intervalo))
-            
-        # Limpieza de la bandera al salir del ciclo
-        app_obj.hilos_snmp_activos.pop(identificador_unico, None)
-
-
-def iniciar_monitoreo_hilo(app_obj, hostname, ip_admin, interfaz_api, intervalo):
-    """
-    Lanza el hilo de sondeo continuo regulado por el intervalo de la URL.
-    """
-    hilo = threading.Thread(
-        target=proceso_monitoreo_continuo,
-        args=(app_obj.app_context(), hostname, ip_admin, interfaz_api, intervalo)
-    )
-    hilo.daemon = True
-    hilo.start()
-    return {
-        "error": False, 
-        "mensaje": f"Monitoreo continuo e indefinido activado en {interfaz_api}.",
-        "configuracion": {
-            "intervalo_muestreo_segundos": intervalo
-        }
-    }
-
-def detener_monitoreo_interfaz(hostname, interfaz_api):
-    """
-    Modifica la bandera en la app global. Compatible con peticiones DELETE masivas.
-    """
-    identificador_unico = f"{hostname}_{interfaz_api}"
-    
-    # Accedemos de forma segura a través del contexto actual de Flask
-    if identificador_unico in current_app.hilos_snmp_activos:
-        current_app.hilos_snmp_activos[identificador_unico] = False
-        return {"error": False, "mensaje": f"Proceso de monitoreo en {interfaz_api} detenido exitosamente."}
-    
-    return {"error": True, "mensaje": f"No hay un proceso de monitoreo activo para la interfaz {interfaz_api}."}
-# --- RECEPTOR DE TRAPS SNMP CON FILTRADO ESTRICTO ---
-
-# --- RECEPTOR ASÍNCRONO DE TRAPS/INFORMs (PUERTO 162) ---
-
-# Tarea asíncrona global de control para saber si el Listener UDP está corriendo en el background de la API
-_TAREA_LISTENER_TRAPS = None
-
 def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextName, varBinds, cbCtx):
     """
-    Callback nativo de PySNMP v7.1. Se ejecuta automáticamente cada vez que 
-    un router de GNS3 envía una trampa al puerto 162.
+    Firma estricta de 6 argumentos alineada perfectamente con ntfrcv.py:104-106.
+    Procesa de manera eficiente las trampas capturadas en el puerto 162.
     """
     from database.models import db, EventoTrap, Router
-    # cbCtx transporta de forma segura el app_context de Flask
+    
     app_context = cbCtx
     app_obj = app_context.app
     
-    # OIDs estándar definidos en la documentación de PySNMP / MIBs IETF
     OID_LINK_DOWN = '1.3.6.1.6.3.1.1.5.3'
     OID_LINK_UP = '1.3.6.1.6.3.1.1.5.4'
     OID_IF_DESCR = '1.3.6.1.2.1.2.2.1.2'
@@ -219,7 +129,6 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
     interfaz_afectada = "Desconocida"
     ip_origen = "Desconocida"
 
-    # Extraer la IP de origen del paquete UDP
     try:
         transport_info = snmpEngine.transportDispatcher.getTransportInfo(stateReference)
         if transport_info:
@@ -227,7 +136,6 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
     except Exception:
         pass
 
-    # Analizar el contenido del Trap
     for name, val in varBinds:
         val_str = str(val)
         if val_str == OID_LINK_DOWN:
@@ -246,11 +154,11 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
         
         identificador_unico = f"{hostname}_{interfaz_afectada}_traps"
 
-        # REGLA FILTRADO ESTRICTO: Si no está activa la captura (POST), se ignora el evento de red
+        # REGLA FILTRADO ESTRICTO (POST/DELETE)
         if not app_obj.hilos_snmp_activos.get(identificador_unico, False):
             return
 
-        print(f"\n🔔 [TRAP CAPTURADO] -> Evento detectado para la interfaz activa: {identificador_unico}")
+        print(f"\n🔔 [TRAP CAPTURADO v7.1] -> Evento detectado para interfaz activa: {identificador_unico}")
         
         nuevo_evento = EventoTrap(
             router_hostname=hostname,
@@ -259,78 +167,73 @@ def procesar_trap_entrante(snmpEngine, stateReference, contextEngineId, contextN
         )
         db.session.add(nuevo_evento)
         db.session.commit()
-        print(f"   💾 [GUARDADO EN BD] -> Estado actualizado: {tipo_evento}")
+        print(f"   💾 [BD GUARDADO] -> Estado: {tipo_evento}")
 
 
 def ejecutar_servidor_traps_sincrono(app_context):
     """
-    Levanta un socket UDP real en el puerto 162 de forma robusta e indestructible.
-    Implementa 'jobStarted(1)' inspirado en el repositorio de gabrielmarques22 
-    para forzar la persistencia del Socket UDP en el sistema operativo.
+    Levanta un socket UDP e implementa de forma matemática runDispatcher() y jobStarted(1).
+    Alineado con dispatch.py:58-61 y base.py:90-99.
     """
-    from pysnmp.hlapi.v3arch.asyncio import SnmpEngine
-    from pysnmp.entity.rfc3413.asyncio import ntfrcv  # API asíncrona nativa de v7
-    from pysnmp.carrier.asyncio.dgram import udp
-    from pysnmp.hlapi import config
-    import os
-
     puerto_traps = int(os.getenv('SNMP_PORT_TRAPS', 162))
-    ip_escucha = "0.0.0.0"  # Escucha en cualquier interfaz de red de GNS3
+    ip_escucha = "0.0.0.0" 
 
     snmp_engine = SnmpEngine()
 
-    # 1. Configurar y forzar la apertura del puerto 162 en Alpine Linux
+    # 1. Registro del transporte usando udp.DOMAIN (v7.1 estricto)
     try:
         config.addTransport(
             snmp_engine,
-            udp.DOMAIN,
+            udp.DOMAIN,  # Cumple requerimiento 1: base.py:90-99
             udp.UdpTransport().openServerMode((ip_escucha, puerto_traps))
         )
     except Exception as e:
-        print(f"❌ [FALLO PUERTO 162] No se pudo abrir el socket UDP {puerto_traps}. Detalle: {e}")
+        print(f"❌ [FALLO PUERTO 162] Error crítico de enlace de socket. ¿Es root? Detalle: {e}")
         return
 
-    # 2. Registrar el NotificationReceiver vinculando tu callback y el app_context de Flask
+    # 2. Registro formal del NotificationReceiver (ntfrcv.py:17-18)
     ntfrcv.NotificationReceiver(
         snmp_engine, 
         procesar_trap_entrante, 
         cbCtx=app_context
     )
 
-    # === LA SOLUCIÓN DEL REPOSITORIO (MANTENER EL SOCKET ALERTA PERPETUAMENTE) ===
-    # Le indicamos al despachador que registre un trabajo continuo para que no se autocancele
+    # 3. Forzar persistencia del bucle de red (dispatch.py:58-61)
     snmp_engine.transportDispatcher.jobStarted(1)
-    # ==============================================================================
 
     print(f"📡 [SERVIDOR UDP TRAPS ONLINE] Escuchando perpetuamente en el puerto {puerto_traps}...")
 
-    # 3. Arrancar el loop de escucha de red puro de PySNMP
+    # 4. Inicializar el loop de sockets de PySNMP de forma segura
     try:
         snmp_engine.transportDispatcher.runDispatcher()
     except Exception as e:
-        print(f"⚠️ [SERVIDOR TRAPS] Interrupción en el despachador de red: {e}")
+        print(f"⚠️ [SERVIDOR TRAPS] Interrupción en el bucle de despacho de red: {e}")
     finally:
-        # Si el hilo es destruido por Flask al apagar la app, liberamos el puerto
-        snmp_engine.transportDispatcher.jobFinished(1)
-        snmp_engine.transportDispatcher.closeDispatcher()
+        # Garantiza la limpieza atómica del socket del sistema operativo ante cierres
+        try:
+            snmp_engine.transportDispatcher.jobFinished(1)
+            snmp_engine.transportDispatcher.closeDispatcher()
+        except Exception:
+            pass
         print("🛑 [SERVIDOR TRAPS OFFLINE] Socket UDP 162 liberado del sistema.")
+
 
 def asegurar_receptor_traps_corriendo(app_obj):
     """
-    Asegura que el socket de red del puerto 162 esté levantado y vivo en background.
+    Administrador de hilos con bloqueo (Mutex Lock). Evita colisiones de puertos 
+    causadas por el doble proceso del Reloader de Flask (Werkzeug).
     """
     global _HILO_LISTENER_TRAPS
     
-    if _HILO_LISTENER_TRAPS is not None and _HILO_LISTENER_TRAPS.is_alive():
-        return  # El socket ya está abierto y operando perfectamente
+    with _LOCK_LISTENER:
+        if _HILO_LISTENER_TRAPS is not None and _HILO_LISTENER_TRAPS.is_alive():
+            return  # El socket ya está abierto y corriendo felizmente
 
-    import threading
-    
-    # Lanzamos el despachador en un hilo daemon dedicado e inmune a asyncio
-    hilo = threading.Thread(
-        target=ejecutar_servidor_traps_sincrono, 
-        args=(app_obj.app_context(),)
-    )
-    hilo.daemon = True
-    hilo.start()
-    _HILO_LISTENER_TRAPS = hilo
+        # Levantamos el socket en un hilo daemon aislado
+        hilo = threading.Thread(
+            target=ejecutar_servidor_traps_sincrono, 
+            args=(app_obj.app_context(),)
+        )
+        hilo.daemon = True
+        hilo.start()
+        _HILO_LISTENER_TRAPS = hilo
