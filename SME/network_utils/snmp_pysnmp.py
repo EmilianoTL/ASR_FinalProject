@@ -6,6 +6,8 @@ import threading
 import time
 from flask import current_app
 
+HILOS_MONITOREO_ACTIVOS = {}
+
 COMUNIDAD = os.getenv('SNMP_COMMUNITY', 'asr_proyecto')
 PUERTO_SNMP = int(os.getenv('SNMP_PORT_POLLING', 161))
 
@@ -122,18 +124,49 @@ if __name__ == '__main__':
 def proceso_monitoreo_continuo(app_context, hostname, ip_admin, interfaz_api, tiempo_total):
     """
     Función que vive en un Hilo (Thread). 
-    Toma una muestra, espera el intervalo, y repite hasta que se acabe el tiempo.
+    Revisa en cada ciclo si la bandera sigue activa antes de tomar la muestra.
     """
     intervalo = int(os.getenv('POLLING_INTERVAL', 10))
     iteraciones = int(tiempo_total) // intervalo
+    
+    identificador_unico = f"{hostname}_{interfaz_api}"
+    HILOS_MONITOREO_ACTIVOS[identificador_unico] = True
 
-    # Se requiere el app_context para que SQLAlchemy funcione dentro del hilo
     with app_context: 
         for _ in range(iteraciones):
+            # REGLA DEL DELETE: Si la bandera pasa a False, rompemos el ciclo y el hilo muere
+            if not HILOS_MONITOREO_ACTIVOS.get(identificador_unico, False):
+                print(f"[THREAD] Monitoreo detenido manualmente para {identificador_unico}")
+                break
+                
             recolectar_octetos(hostname, ip_admin, interfaz_api)
             time.sleep(intervalo)
+            
+        # Limpieza al terminar el tiempo o ser destruido
+        HILOS_MONITOREO_ACTIVOS.pop(identificador_unico, None)
 
 def iniciar_monitoreo_hilo(app_obj, hostname, ip_admin, interfaz_api, tiempo_total):
+    """
+    Crea el hilo de sondeo continuo y lo lanza.
+    """
+    hilo = threading.Thread(
+        target=proceso_monitoreo_continuo,
+        args=(app_obj.app_context(), hostname, ip_admin, interfaz_api, tiempo_total)
+    )
+    hilo.daemon = True
+    hilo.start()
+    return {"error": False, "mensaje": f"Monitoreo iniciado en {interfaz_api} por {tiempo_total} segundos."}
+
+def detener_monitoreo_interfaz(hostname, interfaz_api):
+    """
+    Cambia la bandera global a False para forzar la parada del hilo secundario.
+    """
+    identificador_unico = f"{hostname}_{interfaz_api}"
+    if identificador_unico in HILOS_MONITOREO_ACTIVOS:
+        HILOS_MONITOREO_ACTIVOS[identificador_unico] = False
+        return {"error": False, "mensaje": f"Proceso de monitoreo en {interfaz_api} detenido exitosamente."}
+    
+    return {"error": True, "mensaje": f"No hay un proceso de monitoreo activo para la interfaz {interfaz_api}."}
     """
     Crea el hilo y lo lanza sin bloquear la API.
     """

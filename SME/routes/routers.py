@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, current_app
-from database.models import Router
+from database.models import *
 from network_utils.snmp_pysnmp import iniciar_monitoreo_hilo
 
 routers_bp = Blueprint('routers', __name__)
@@ -39,17 +39,50 @@ def delete_local_user(hostname):
 # --- MONITOREO DE INTERFAZ (OCTETOS) ---
 @routers_bp.route('/<hostname>/interfaces/<interfaz>/octetos/<tiempo>', methods=['GET'])
 def get_octetos(hostname, interfaz, tiempo):
-    return jsonify({"mensaje": f"Muestras de monitoreo en {interfaz}"}), 200
+    """
+    Regresa un JSON con todas las muestras guardadas en la BD hasta el momento.
+    Cumple la regla del HTTP 404 si el router no existe en el catálogo.
+    """
+    # 1. Validar existencia del router (Regla general 2 del PDF)
+    router = Router.query.filter_by(hostname=hostname).first()
+    if not router:
+        return jsonify({"error": True, "mensaje": "Router no encontrado en la topología."}), 404
+
+    # 2. Consultar la tabla de métricas filtrando por router e interfaz
+    muestras = MetricaOctetos.query.filter_by(
+        router_hostname=hostname, 
+        interfaz_api=interfaz
+    ).order_by(MetricaOctetos.timestamp.asc()).all()
+
+    # 3. Formatear los registros de SQLAlchemy a diccionarios JSON nativos
+    lista_muestras = [
+        {
+            "id": m.id,
+            "router": m.router_hostname,
+            "interfaz": m.interfaz_api,
+            "octetos_entrada": m.octetos_entrada,
+            "timestamp": m.timestamp.isoformat()
+        }
+        for m in muestras
+    ]
+
+    return jsonify({
+        "router": hostname,
+        "interfaz": interfaz,
+        "total_muestras_recolectadas": len(lista_muestras),
+        "muestras": lista_muestras
+    }), 200
 
 @routers_bp.route('/<hostname>/interfaces/<interfaz>/octetos/<tiempo>', methods=['POST'])
 def start_octetos(hostname, interfaz, tiempo):
-    # 1. Cumplir regla del PDF: Buscar el router. Si no existe, devolver 404.
+    """
+    Activa el monitoreo en segundo plano.
+    """
     router = Router.query.filter_by(hostname=hostname).first()
-    
     if not router:
-        return jsonify({"error": True, "mensaje": "Router no encontrado en la topología"}), 404
+        return jsonify({"error": True, "mensaje": "Router no encontrado en la topología."}), 404
 
-    # 2. Iniciar el hilo de monitoreo pasando el contexto de la app actual
+    from network_utils.snmp_pysnmp import iniciar_monitoreo_hilo
     resultado = iniciar_monitoreo_hilo(
         current_app._get_current_object(), 
         hostname, 
@@ -57,12 +90,23 @@ def start_octetos(hostname, interfaz, tiempo):
         interfaz, 
         int(tiempo)
     )
-    
     return jsonify(resultado), 200
 
 @routers_bp.route('/<hostname>/interfaces/<interfaz>/octetos/<tiempo>', methods=['DELETE'])
 def stop_octetos(hostname, interfaz, tiempo):
-    return jsonify({"mensaje": f"Para el proceso de monitoreo en {interfaz}"}), 200
+    """
+    Detiene inmediatamente el hilo de monitoreo continuo para la interfaz.
+    """
+    router = Router.query.filter_by(hostname=hostname).first()
+    if not router:
+        return jsonify({"error": True, "mensaje": "Router no encontrado en la topología."}), 404
+
+    from network_utils.snmp_pysnmp import detener_monitoreo_interfaz
+    resultado = detener_monitoreo_interfaz(hostname, interfaz)
+    
+    # Si ocurre con éxito devolvemos 200, si no había hilo activo devolvemos un código de control
+    status_code = 200 if not resultado["error"] else 400
+    return jsonify(resultado), status_code
 
 
 # --- GESTIÓN DE TRAPS (LINKUP/LINKDOWN) ---
