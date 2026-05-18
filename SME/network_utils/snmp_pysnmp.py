@@ -2,6 +2,9 @@ import os
 import asyncio
 from pysnmp.hlapi.v3arch.asyncio import *
 from database.models import db, MetricaOctetos
+import threading
+import time
+from flask import current_app
 
 COMUNIDAD = os.getenv('SNMP_COMMUNITY', 'asr_proyecto')
 PUERTO_SNMP = int(os.getenv('SNMP_PORT_POLLING', 161))
@@ -102,7 +105,7 @@ def recolectar_octetos(hostname, ip_admin, interfaz_api):
 
 # --- BLOQUE DE PRUEBA LOCAL ---
 if __name__ == '__main__':
-    from database.models import app
+    from app import app
     
     ROUTER_PRUEBA = "Edge"
     IP_PRUEBA = "192.168.100.1" 
@@ -115,3 +118,30 @@ if __name__ == '__main__':
         resultado = recolectar_octetos(ROUTER_PRUEBA, IP_PRUEBA, INTERFAZ_PRUEBA)
         print("\nResultado:")
         print(resultado)
+
+def proceso_monitoreo_continuo(app_context, hostname, ip_admin, interfaz_api, tiempo_total):
+    """
+    Función que vive en un Hilo (Thread). 
+    Toma una muestra, espera el intervalo, y repite hasta que se acabe el tiempo.
+    """
+    intervalo = int(os.getenv('POLLING_INTERVAL', 10))
+    iteraciones = int(tiempo_total) // intervalo
+
+    # Se requiere el app_context para que SQLAlchemy funcione dentro del hilo
+    with app_context: 
+        for _ in range(iteraciones):
+            recolectar_octetos(hostname, ip_admin, interfaz_api)
+            time.sleep(intervalo)
+
+def iniciar_monitoreo_hilo(app_obj, hostname, ip_admin, interfaz_api, tiempo_total):
+    """
+    Crea el hilo y lo lanza sin bloquear la API.
+    """
+    hilo = threading.Thread(
+        target=proceso_monitoreo_continuo,
+        args=(app_obj.app_context(), hostname, ip_admin, interfaz_api, tiempo_total)
+    )
+    hilo.daemon = True  # Si la API se apaga, el hilo también muere
+    hilo.start()
+    
+    return {"error": False, "mensaje": f"Monitoreo iniciado en {interfaz_api} por {tiempo_total} segundos."}

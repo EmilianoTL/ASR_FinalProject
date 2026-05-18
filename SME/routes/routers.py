@@ -1,4 +1,6 @@
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, current_app
+from database.models import Router
+from network_utils import iniciar_monitoreo_hilo
 
 routers_bp = Blueprint('routers', __name__)
 
@@ -41,7 +43,22 @@ def get_octetos(hostname, interfaz, tiempo):
 
 @routers_bp.route('/<hostname>/interfaces/<interfaz>/octetos/<tiempo>', methods=['POST'])
 def start_octetos(hostname, interfaz, tiempo):
-    return jsonify({"mensaje": f"Activa monitoreo en {interfaz} por {tiempo} seg"}), 200
+    # 1. Cumplir regla del PDF: Buscar el router. Si no existe, devolver 404.
+    router = Router.query.filter_by(hostname=hostname).first()
+    
+    if not router:
+        return jsonify({"error": True, "mensaje": "Router no encontrado en la topología"}), 404
+
+    # 2. Iniciar el hilo de monitoreo pasando el contexto de la app actual
+    resultado = iniciar_monitoreo_hilo(
+        current_app._get_current_object(), 
+        hostname, 
+        router.ip_admin, 
+        interfaz, 
+        int(tiempo)
+    )
+    
+    return jsonify(resultado), 200
 
 @routers_bp.route('/<hostname>/interfaces/<interfaz>/octetos/<tiempo>', methods=['DELETE'])
 def stop_octetos(hostname, interfaz, tiempo):
