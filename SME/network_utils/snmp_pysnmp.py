@@ -277,7 +277,7 @@ async def corutina_servidor_traps(app_context):
  
     config.addTransport(
         snmp_engine,
-        udp.DOMAIN,
+        udp.DOMAIN_NAME,
         udp.UdpTransport().openServerMode((ip_escucha, puerto_traps))
     )
     
