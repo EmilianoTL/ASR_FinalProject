@@ -13,21 +13,23 @@ def estandarizar_nombre_interfaz(interfaz_api):
     return nombre
 
 async def obtener_indice_dinamico(ip_admin, interfaz_api):
+    """
+    Refactorizado usando walk_cmd según la documentación oficial de PySNMP v7.1
+    Esto maneja los saltos y el límite del OID automáticamente.
+    """
     nombre_buscado = estandarizar_nombre_interfaz(interfaz_api)
-    oid_ifdescr = '1.3.6.1.2.1.2.2.1.2'
+    oid_base = '1.3.6.1.2.1.2.2.1.2'
     
-    # 1. Creación asíncrona del transporte UDP (PySNMP v7.1)
     transport = await UdpTransportTarget.create((ip_admin, PUERTO_SNMP))
     engine = SnmpEngine()
     
-    # 2. Uso de next_cmd en lugar de nextCmd
-    async for errorIndication, errorStatus, errorIndex, varBinds in next_cmd(
+    # walk_cmd hace el trabajo pesado del iterador automáticamente
+    async for errorIndication, errorStatus, errorIndex, varBinds in walk_cmd(
         engine,
         CommunityData(COMUNIDAD, mpModel=1),
         transport,
         ContextData(),
-        ObjectType(ObjectIdentity(oid_ifdescr)),
-        lexicographicMode=False
+        ObjectType(ObjectIdentity(oid_base))
     ):
         if errorIndication or errorStatus:
             return None
@@ -35,8 +37,9 @@ async def obtener_indice_dinamico(ip_admin, interfaz_api):
         for varBind in varBinds:
             oid_completo = str(varBind[0])
             nombre_interfaz = str(varBind[1]).lower()
+            
+            # Solo evaluamos si encontramos la interfaz
             if nombre_buscado in nombre_interfaz:
-                # Retorna el ifIndex encontrado (ej. el '2' de '...2.2.1.2.2')
                 return int(oid_completo.split('.')[-1])
                 
     return None
